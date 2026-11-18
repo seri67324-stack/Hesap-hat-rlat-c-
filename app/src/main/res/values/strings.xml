@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Harcama Takip</string>
+    <string name="channel_budget">Bütçe uyarıları</string>
+    <string name="channel_due">Ödeme hatırlatmaları</string>
+</resources>
