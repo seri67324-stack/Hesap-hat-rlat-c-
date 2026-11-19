@@ -86,7 +86,7 @@ class ExpenseFiltererTest {
             type = TypeFilter.EXPENSE,
             categoryIds = setOf(1L),
             paymentMethods = setOf(PaymentMethod.DEBIT_CARD),
-            from = day(1), to = day(31),
+            from = day(1), to = day(30),
             minAmount = 2000, maxAmount = 6000,
             sort = SortOrder.AMOUNT_DESC
         )
