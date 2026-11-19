@@ -15,6 +15,9 @@ import com.harcamatakip.app.R
 object Notifier {
     const val CH_BUDGET = "budget"
     const val CH_DUE = "due"
+    const val CH_BACKUP = "backup"
+    const val EXTRA_ACTION = "action"
+    const val ACTION_BACKUP = "backup"
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -25,18 +28,22 @@ object Notifier {
         nm.createNotificationChannel(
             NotificationChannel(CH_DUE, ctx.getString(R.string.channel_due), NotificationManager.IMPORTANCE_DEFAULT)
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_BACKUP, ctx.getString(R.string.channel_backup), NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     /** Bildirim izni yoksa (Android 13+) sessizce hiçbir şey yapmaz. */
     @SuppressLint("MissingPermission")
-    fun notify(ctx: Context, channel: String, id: Int, title: String, text: String) {
+    fun notify(ctx: Context, channel: String, id: Int, title: String, text: String, action: String? = null) {
         val nm = NotificationManagerCompat.from(ctx)
         if (!nm.areNotificationsEnabled()) return
         val intent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (action != null) putExtra(EXTRA_ACTION, action)
         }
         val pending = PendingIntent.getActivity(
-            ctx, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notification = NotificationCompat.Builder(ctx, channel)
             .setSmallIcon(R.drawable.ic_notification)

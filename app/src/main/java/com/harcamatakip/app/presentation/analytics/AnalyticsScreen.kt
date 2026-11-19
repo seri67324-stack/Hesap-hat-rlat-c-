@@ -1,5 +1,6 @@
 package com.harcamatakip.app.presentation.analytics
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PieChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -66,6 +68,10 @@ import com.harcamatakip.app.domain.model.Period
 import com.harcamatakip.app.domain.model.TxItem
 import com.harcamatakip.app.domain.usecase.AnalyticsCalculator
 import com.harcamatakip.app.domain.usecase.CategoryTotal
+import com.harcamatakip.app.domain.usecase.CategoryTrend
+import com.harcamatakip.app.domain.usecase.ProjectionBreakdown
+import com.harcamatakip.app.domain.usecase.SafeDailyLimit
+import com.harcamatakip.app.domain.usecase.SafeSpending
 import com.harcamatakip.app.domain.usecase.DayTotal
 import com.harcamatakip.app.domain.usecase.Insights
 import com.harcamatakip.app.domain.usecase.MonthTotal
@@ -74,6 +80,10 @@ import com.harcamatakip.app.domain.usecase.TrendPoint
 import com.harcamatakip.app.domain.usecase.WeekdayAvg
 import com.harcamatakip.app.presentation.components.BarChart
 import com.harcamatakip.app.presentation.components.CategoryAvatar
+import com.harcamatakip.app.presentation.components.ComparisonBars
+import com.harcamatakip.app.presentation.components.ComparisonRow
+import com.harcamatakip.app.presentation.components.SafeSpendingCard
+import com.harcamatakip.app.presentation.components.TrendBadge
 import com.harcamatakip.app.presentation.components.CumulativeChart
 import com.harcamatakip.app.presentation.components.DateRangePickerDialogM3
 import com.harcamatakip.app.presentation.components.DonutChart
@@ -130,6 +140,12 @@ data class AnalyticsState(
     val cumulative: List<Long> = emptyList(),
     val budget: Long? = null,
     val projected: Long? = null,
+    /** Tahminin nasıl hesaplandığını anlatan ara değerler (tahmin yoksa null). */
+    val projection: ProjectionBreakdown? = null,
+    /** Yalnızca içinde bulunulan ay seçiliyken ve genel bütçe varken dolu. */
+    val safeLimit: SafeDailyLimit? = null,
+    /** Kategori kimliği -> önceki döneme göre değişim (gider). */
+    val categoryTrends: Map<Long, CategoryTrend> = emptyMap(),
     val weekdays: List<WeekdayAvg> = emptyList(),
     val payment: PaymentSplit? = null,
     val categoryMonthly: Map<Long, List<Long>> = emptyMap(),
@@ -204,10 +220,14 @@ class AnalyticsViewModel @Inject constructor(
         val totals = AnalyticsCalculator.categoryTotals(expensesInRange, catMap)
         val incomeTotals = AnalyticsCalculator.categoryTotals(incomeInRange, catMap)
 
-        val projected = if (partial && expenseTotal > 0) {
+        val projection = if (partial && expenseTotal > 0) {
             val upcoming = AnalyticsCalculator.upcomingRecurringExpense(recurringList, today, to)
-            AnalyticsCalculator.projectExpense(expensesInRange, from, to, today, upcoming)
+            AnalyticsCalculator.projectionBreakdown(expensesInRange, from, to, today, upcoming)
         } else null
+        val projected = projection?.total
+
+        val prevCategoryTotals = AnalyticsCalculator.previousCategoryTotals(all, sel.period, from, to, today)
+        val categoryTrends = AnalyticsCalculator.categoryTrends(totals, prevCategoryTotals)
 
         val biggest = expensesInRange.maxByOrNull { it.amount }?.let { TxItem(it, catMap[it.categoryId]) }
 
@@ -236,6 +256,8 @@ class AnalyticsViewModel @Inject constructor(
         } else null
 
         val generalBudget = budgetList.firstOrNull { it.categoryId == 0L }?.limitAmount?.takeIf { it > 0 }
+        val safeLimit = if (sel.period == Period.MONTH && isCurrent && generalBudget != null)
+            SafeSpending.compute(generalBudget, expenseTotal, today, to) else null
 
         AnalyticsState(
             symbol = st.currency.symbol,
@@ -257,6 +279,9 @@ class AnalyticsViewModel @Inject constructor(
             cumulative = AnalyticsCalculator.cumulative(daily),
             budget = if (sel.period == Period.MONTH) generalBudget else null,
             projected = projected,
+            projection = projection,
+            safeLimit = safeLimit,
+            categoryTrends = categoryTrends,
             weekdays = if (daily.size >= 7) AnalyticsCalculator.weekdayAverages(daily, w.weekStart) else emptyList(),
             payment = if (expensesInRange.isNotEmpty()) AnalyticsCalculator.paymentSplit(expensesInRange) else null,
             categoryMonthly = AnalyticsCalculator.categoryMonthlyFromSums(catRows, 6, today),
@@ -313,12 +338,14 @@ fun AnalyticsScreen(onOpenTransaction: (Long) -> Unit, vm: AnalyticsViewModel = 
                 }
             } else {
                 item { SummaryRow(s) }
+                s.safeLimit?.let { limit -> item { SafeSpendingCard(limit, s.symbol) } }
                 s.insights?.let { ins -> item { InsightsSection(ins, s) } }
                 if (s.selection.period == Period.MONTH && s.daily.size >= 2) {
                     item { CumulativeCard(s) }
                 }
                 item { TrendCard(s) }
                 item { CategoryDonutCard(s, onDetail = { detail = it }) }
+                if (s.categoryTrends.values.any { it.previous > 0 }) item { CategoryComparisonCard(s) }
                 if (s.weekdays.isNotEmpty()) item { WeekdayCard(s) }
                 if (s.selection.period == Period.MONTH) item { HeatmapCard(s) }
                 s.payment?.let { p -> item { PaymentCard(p, s.symbol) } }
@@ -446,11 +473,7 @@ private fun InsightsSection(ins: Insights, s: AnalyticsState) {
             accent = MaterialTheme.colorScheme.primary
         )
         ins.projected?.let {
-            InsightCard(
-                title = "Dönem sonu tahmini toplam",
-                subtitle = "${it.formatMoney(sym)} (sabit giderler ayrı, değişken harcama şimdiki hızınla)",
-                accent = MaterialTheme.colorScheme.tertiary
-            )
+            ProjectionCard(it, s.projection, sym)
         }
         ins.biggest?.let { b ->
             InsightCard(
@@ -460,6 +483,73 @@ private fun InsightsSection(ins: Insights, s: AnalyticsState) {
                 accent = ExpenseRed
             )
         }
+    }
+}
+
+/** "Dönem sonu tahmini toplam" kartı; dokununca hesabın nasıl yapıldığını adım adım gösterir. */
+@Composable
+private fun ProjectionCard(total: Long, b: ProjectionBreakdown?, sym: String) {
+    var open by remember { mutableStateOf(false) }
+    Card(
+        onClick = { open = !open },
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .width(4.dp)
+                        .height(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.tertiary)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Dönem sonu tahmini toplam", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        total.formatMoney(sym),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(Icons.Rounded.Info, if (open) "Açıklamayı gizle" else "Nasıl hesaplanır?")
+            }
+            if (!open) {
+                Text(
+                    "Nasıl hesaplanır? Dokun.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else if (b != null) {
+                Text(
+                    "Tahmin üç parçadan oluşur:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                ExplainLine("1. Sabit giderler (tekrarlayan işlemlerden eklenenler) olduğu gibi alınır", b.fixed.formatMoney(sym))
+                ExplainLine(
+                    "2. Değişken harcama: ${b.elapsedDays} günde ${b.variableSoFar.formatMoney(sym)} harcandı " +
+                        "(günde ort. ${b.dailyVariableRate.formatMoney(sym)}). Kalan ${b.remainingDays} gün de aynı hızla " +
+                        "sürerse ${b.lengthDays} günlük dönem için",
+                    b.projectedVariable.formatMoney(sym)
+                )
+                ExplainLine("3. Dönem bitmeden vadesi gelecek tekrarlayan giderler eklenir", b.upcomingRecurring.formatMoney(sym))
+                Text(
+                    "Toplam = 1 + 2 + 3. Bu bir tahmindir; harcama hızın değişirse sonuç da değişir.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExplainLine(text: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
+        Text(value, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -658,9 +748,44 @@ private fun CategoryDonutCard(s: AnalyticsState, onDetail: (CategoryTotal) -> Un
                             )
                         }
                     }
-                    Text(t.amount.formatMoney(s.symbol), style = MaterialTheme.typography.titleMedium)
+                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(t.amount.formatMoney(s.symbol), style = MaterialTheme.typography.titleMedium)
+                        if (!showIncome) TrendBadge(t.category?.id?.let { id -> s.categoryTrends[id] })
+                    }
                 }
             }
+        }
+    }
+}
+
+/** Kategori bazlı "bu dönem / önceki dönem" karşılaştırma çubukları (ilk 6 kategori). */
+@Composable
+private fun CategoryComparisonCard(s: AnalyticsState) {
+    val rows = s.categoryTotals.take(6).mapNotNull { t ->
+        val cat = t.category ?: return@mapNotNull null
+        val tr = s.categoryTrends[cat.id] ?: return@mapNotNull null
+        ComparisonRow(
+            name = cat.name,
+            color = Color(cat.colorArgb),
+            current = tr.current,
+            previous = tr.previous,
+            trend = tr
+        )
+    }
+    if (rows.isEmpty()) return
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Önceki döneme göre kategoriler", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Dolu çubuk bu dönem, soluk çubuk önceki dönem" +
+                    (s.insights?.previousLabel?.let { " ($it göre)" } ?: "") + ". Kırmızı artış, yeşil azalış.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            ComparisonBars(rows, s.symbol)
         }
     }
 }
@@ -675,6 +800,7 @@ private fun CategoryDetailSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val catId = t.category?.id
+    val trend = catId?.let { s.categoryTrends[it] }
     val monthly = catId?.let { s.categoryMonthly[it] } ?: List(6) { 0L }
     val labels = remember {
         (5 downTo 0).map { YearMonth.now().minusMonths(it.toLong()).atDay(1).fmt("MMM") }
@@ -695,10 +821,22 @@ private fun CategoryDetailSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        t.amount.formatMoney(s.symbol),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TrendBadge(trend)
+                }
+            }
+            if (trend != null) {
                 Text(
-                    t.amount.formatMoney(s.symbol),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    "Önceki dönemde ${trend.previous.formatMoney(s.symbol)} harcamıştın" +
+                        (trend.changePct?.let { " · fark: ${(trend.current - trend.previous).formatMoney(s.symbol)}" } ?: " · bu kategoride önceki dönem harcama yoktu"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
             Text(
@@ -830,22 +968,79 @@ private fun HeatmapCard(s: AnalyticsState) {
 
 @Composable
 private fun PaymentCard(p: PaymentSplit, symbol: String) {
-    val total = (p.cash + p.card).coerceAtLeast(1L)
-    val cashColor = MaterialTheme.colorScheme.primary
-    val cardColor = MaterialTheme.colorScheme.tertiary
+    val total = p.total.coerceAtLeast(1L)
+    val colors = mapOf(
+        PaymentMethod.CASH to MaterialTheme.colorScheme.primary,
+        PaymentMethod.DEBIT_CARD to MaterialTheme.colorScheme.tertiary,
+        PaymentMethod.CREDIT_CARD to MaterialTheme.colorScheme.secondary
+    )
+    // Halkada yalnızca tutarı olan yöntemler; açıklama listesinde üç yöntem de görünür
+    val active = PaymentMethod.all.filter { p.amountOf(it) > 0 }
+    var selected by remember(p) { mutableStateOf<Int?>(null) }
+    val slices = active.map { DonutSlice(p.amountOf(it).toFloat(), colors.getValue(it)) }
+    val description = "Ödeme yöntemi dağılımı. " + PaymentMethod.all.joinToString(". ") {
+        "${PaymentMethod.label(it)}: ${p.amountOf(it).formatMoney(symbol)}, yüzde ${p.amountOf(it) * 100 / total}"
+    }
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Ödeme yöntemi", style = MaterialTheme.typography.titleMedium)
-            Row(Modifier.fillMaxWidth().height(14.dp).clip(CircleShape)) {
-                if (p.cash > 0) Box(Modifier.weight(p.cash.toFloat()).fillMaxHeight().background(cashColor))
-                if (p.card > 0) Box(Modifier.weight(p.card.toFloat()).fillMaxHeight().background(cardColor))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                DonutChart(
+                    slices = slices,
+                    selected = selected,
+                    onSelect = { selected = it },
+                    modifier = Modifier.width(180.dp),
+                    description = description
+                ) {
+                    val sel = selected?.let { active.getOrNull(it) }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            sel?.let { PaymentMethod.label(it) } ?: "Toplam",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            (sel?.let { p.amountOf(it) } ?: p.total).formatMoney(symbol),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                LegendDot(cashColor, "${PaymentMethod.label(PaymentMethod.CASH)} ${p.cash.formatMoney(symbol)} (%${p.cash * 100 / total})")
-                LegendDot(cardColor, "${PaymentMethod.label(PaymentMethod.CARD)} ${p.card.formatMoney(symbol)} (%${p.card * 100 / total})")
+            PaymentMethod.all.forEach { m ->
+                val amount = p.amountOf(m)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(colors.getValue(m)))
+                    Spacer(Modifier.width(8.dp))
+                    Text(PaymentMethod.label(m), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(
+                        "${amount.formatMoney(symbol)} · %${amount * 100 / total}",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+            if (p.labels.isNotEmpty()) {
+                Text(
+                    "Kart / hesap bazında",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                p.labels.take(5).forEach { l ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(colors.getValue(l.method)))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${l.label} (${PaymentMethod.label(l.method)})",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                        Text(l.amount.formatMoney(symbol), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
     }

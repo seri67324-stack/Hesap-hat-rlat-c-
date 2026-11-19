@@ -51,6 +51,7 @@ import com.harcamatakip.app.core.util.AppCurrency
 import com.harcamatakip.app.data.repository.DataManager
 import com.harcamatakip.app.data.settings.AppSettings
 import com.harcamatakip.app.data.settings.SettingsRepository
+import com.harcamatakip.app.domain.usecase.BackupReminderPolicy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -83,6 +84,7 @@ class SettingsViewModel @Inject constructor(
     fun setDynamic(b: Boolean) = viewModelScope.launch { repo.setDynamicColor(b) }
     fun setCurrency(c: AppCurrency) = viewModelScope.launch { repo.setCurrency(c) }
     fun setWeekStart(d: DayOfWeek) = viewModelScope.launch { repo.setWeekStart(d) }
+    fun setBackupInterval(days: Int) = viewModelScope.launch { repo.setBackupInterval(days) }
 
     private fun run(okText: (Int) -> String, block: suspend () -> Int) {
         viewModelScope.launch {
@@ -203,9 +205,14 @@ fun SettingsScreen(
             Item("CSV dışa aktar", "Excel'de açılabilir", Icons.Rounded.FileUpload) {
                 exportCsv.launch("harcamalar_${LocalDate.now()}.csv")
             }
-            Item("CSV içe aktar", "Tarih;Tür;Tutar;Kategori;Not;Ödeme", Icons.Rounded.FileDownload) {
+            Item("CSV içe aktar", "Tarih;Tür;Tutar;Kategori;Not;Ödeme;Etiket", Icons.Rounded.FileDownload) {
                 importCsv.launch(arrayOf("text/*", "application/csv", "application/vnd.ms-excel", "*/*"))
             }
+            BackupReminderSettings(
+                intervalDays = s.backupIntervalDays,
+                lastBackupDay = s.lastBackupDay,
+                onChange = vm::setBackupInterval
+            )
             Item("Yedek al", "Tüm verileri tek dosyaya kaydet", Icons.Rounded.Backup) {
                 backup.launch("harcama_yedek_${LocalDate.now()}.json")
             }
@@ -287,6 +294,27 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = vm::dismissErrors) { Text("Tamam") } }
+        )
+    }
+}
+
+/** Yedek hatırlatma sıklığı seçimi + son yedek bilgisi. */
+@Composable
+private fun BackupReminderSettings(intervalDays: Int, lastBackupDay: Long?, onChange: (Int) -> Unit) {
+    val today = LocalDate.now().toEpochDay()
+    val since = BackupReminderPolicy.daysSince(lastBackupDay, today)
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Yedek hatırlatıcısı", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0 to "Kapalı", 7 to "Haftalık", 14 to "2 haftada", 30 to "Aylık").forEach { (days, label) ->
+                FilterChip(selected = intervalDays == days, onClick = { onChange(days) }, label = { Text(label) })
+            }
+        }
+        Text(
+            (if (since == null) "Henüz yedek alınmadı." else if (since == 0L) "Son yedek: bugün." else "Son yedek: $since gün önce.") +
+                if (intervalDays > 0) " Süre dolunca ana ekranda kart ve bildirim görünür." else " Hatırlatma kapalı.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

@@ -8,9 +8,11 @@ import androidx.room.RoomDatabase
         ExpenseEntity::class,
         CategoryEntity::class,
         BudgetEntity::class,
-        RecurringEntity::class
+        RecurringEntity::class,
+        QuickTemplateEntity::class,
+        BudgetAlertStateEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -18,4 +20,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun categoryDao(): CategoryDao
     abstract fun budgetDao(): BudgetDao
     abstract fun recurringDao(): RecurringDao
+    abstract fun quickTemplateDao(): QuickTemplateDao
+    abstract fun budgetAlertDao(): BudgetAlertDao
 }

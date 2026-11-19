@@ -58,7 +58,10 @@ import com.harcamatakip.app.data.repository.ExpenseRepository
 import com.harcamatakip.app.data.settings.SettingsRepository
 import com.harcamatakip.app.presentation.components.BudgetGauge
 import com.harcamatakip.app.presentation.components.CategoryAvatar
+import com.harcamatakip.app.domain.usecase.SafeDailyLimit
+import com.harcamatakip.app.domain.usecase.SafeSpending
 import com.harcamatakip.app.presentation.components.NotificationPermissionCard
+import com.harcamatakip.app.presentation.components.SafeSpendingCard
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -84,7 +87,9 @@ data class BudgetState(
     val symbol: String = "₺",
     val general: BudgetRow = BudgetRow(0, "Genel aylık bütçe", null, null, 0),
     val rows: List<BudgetRow> = emptyList(),
-    val daysLeft: Int = 1
+    val daysLeft: Int = 1,
+    /** "Ay sonuna kadar günde ortalama X" özeti; genel bütçe yoksa null. */
+    val safeLimit: SafeDailyLimit? = null
 )
 
 @HiltViewModel
@@ -119,7 +124,8 @@ class BudgetViewModel @Inject constructor(
                 BudgetRow(c.id, c.name, c, limits[c.id], spent, proj(spent))
             },
             // Bugün dahil ay sonuna kalan gün sayısı
-            daysLeft = (ym.atEndOfMonth().dayOfMonth - today.dayOfMonth + 1).coerceAtLeast(1)
+            daysLeft = SafeSpending.daysLeftInclusive(today, ym.atEndOfMonth()),
+            safeLimit = limits[0L]?.let { SafeSpending.compute(it, month.sumOf { e -> e.amount }, today, ym.atEndOfMonth()) }
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), BudgetState())
 
@@ -158,6 +164,7 @@ fun BudgetScreen(onBack: () -> Unit, vm: BudgetViewModel = hiltViewModel()) {
         ) {
             item { NotificationPermissionCard() }
             item { GeneralBudgetCard(s, onEdit = { editing = s.general }) }
+            s.safeLimit?.let { limit -> item { SafeSpendingCard(limit, s.symbol) } }
             item {
                 Text(
                     "Kategori bütçeleri",
@@ -219,11 +226,6 @@ private fun GeneralBudgetCard(s: BudgetState, onEdit: () -> Unit) {
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(6.dp))
-                        // Ay sonuna kadar günde en fazla harcayabileceğin tutar
-                        Text(
-                            "Günde ~${(remaining / s.daysLeft).formatMoney(s.symbol)} harcayabilirsin (${s.daysLeft} gün kaldı)",
-                            style = MaterialTheme.typography.labelMedium
-                        )
                         val pj = g.projected
                         if (pj != null && pj > limit) {
                             Text(

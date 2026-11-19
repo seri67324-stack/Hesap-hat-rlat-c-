@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Badge
@@ -80,7 +82,13 @@ import com.harcamatakip.app.data.local.ExpenseEntity
 import com.harcamatakip.app.data.repository.CategoryRepository
 import com.harcamatakip.app.data.repository.ExpenseRepository
 import com.harcamatakip.app.data.settings.SettingsRepository
+import com.harcamatakip.app.domain.model.DatePreset
+import com.harcamatakip.app.domain.model.ExpenseFilter
+import com.harcamatakip.app.domain.model.PaymentMethod
+import com.harcamatakip.app.domain.model.SortOrder
 import com.harcamatakip.app.domain.model.TxItem
+import com.harcamatakip.app.domain.model.TypeFilter
+import com.harcamatakip.app.domain.usecase.ExpenseFilterer
 import com.harcamatakip.app.presentation.components.DateRangePickerDialogM3
 import com.harcamatakip.app.presentation.components.EmptyState
 import com.harcamatakip.app.presentation.components.ShimmerBox
@@ -95,36 +103,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
-
-enum class TypeFilter(val label: String) { ALL("Hepsi"), EXPENSE("Gider"), INCOME("Gelir") }
-
-enum class SortOrder(val label: String) {
-    DATE_DESC("Tarih (yeni → eski)"),
-    DATE_ASC("Tarih (eski → yeni)"),
-    AMOUNT_DESC("Tutar (yüksek → düşük)"),
-    AMOUNT_ASC("Tutar (düşük → yüksek)")
-}
-
-data class ExpenseFilter(
-    val query: String = "",
-    val type: TypeFilter = TypeFilter.ALL,
-    val categoryIds: Set<Long> = emptySet(),
-    val from: Long? = null,
-    val to: Long? = null,
-    val minAmount: Long? = null,
-    val maxAmount: Long? = null,
-    val sort: SortOrder = SortOrder.DATE_DESC
-) {
-    /** Filtre sheet'indeki aktif filtre sayısı (rozet için). */
-    val activeCount: Int
-        get() = listOf(
-            categoryIds.isNotEmpty(),
-            from != null && to != null,
-            minAmount != null,
-            maxAmount != null,
-            sort != SortOrder.DATE_DESC
-        ).count { it }
-}
 
 data class ExpensesState(
     val loading: Boolean = true,
@@ -149,29 +127,8 @@ class ExpensesViewModel @Inject constructor(
         expenses.observeAll(), categories.observeAll(), settings.settings, filter
     ) { all, cats, st, f ->
         val catMap = cats.associateBy { it.id }
-        val q = f.query.trim()
-        val filtered = all.filter { e ->
-            val typeOk = when (f.type) {
-                TypeFilter.ALL -> true
-                TypeFilter.EXPENSE -> !e.isIncome
-                TypeFilter.INCOME -> e.isIncome
-            }
-            typeOk &&
-                (f.categoryIds.isEmpty() || e.categoryId in f.categoryIds) &&
-                (f.from == null || e.date >= f.from) &&
-                (f.to == null || e.date <= f.to) &&
-                (f.minAmount == null || e.amount >= f.minAmount) &&
-                (f.maxAmount == null || e.amount <= f.maxAmount) &&
-                (q.isEmpty() ||
-                    e.note.contains(q, ignoreCase = true) ||
-                    (catMap[e.categoryId]?.name ?: "").contains(q, ignoreCase = true))
-        }
-        val sorted = when (f.sort) {
-            SortOrder.DATE_DESC -> filtered.sortedWith(compareByDescending<ExpenseEntity> { it.date }.thenByDescending { it.id })
-            SortOrder.DATE_ASC -> filtered.sortedWith(compareBy<ExpenseEntity> { it.date }.thenBy { it.id })
-            SortOrder.AMOUNT_DESC -> filtered.sortedByDescending { it.amount }
-            SortOrder.AMOUNT_ASC -> filtered.sortedBy { it.amount }
-        }
+        val sorted = ExpenseFilterer.apply(all, f, cats.associate { it.id to it.name })
+        val filtered = sorted
         ExpensesState(
             loading = false,
             symbol = st.currency.symbol,
@@ -259,6 +216,52 @@ fun ExpensesScreen(
                     )
                 }
             }
+            // Ödeme yöntemi (doğrudan seçilir) + kategori / tarih / sıralama için sheet kısayolları
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(PaymentMethod.all, key = { it }) { code ->
+                    FilterChip(
+                        selected = code in s.filter.paymentMethods,
+                        onClick = {
+                            vm.updateFilter {
+                                it.copy(
+                                    paymentMethods = if (code in it.paymentMethods) it.paymentMethods - code
+                                    else it.paymentMethods + code
+                                )
+                            }
+                        },
+                        label = { Text(PaymentMethod.label(code)) }
+                    )
+                }
+                item(key = "chipCategory") {
+                    FilterChip(
+                        selected = s.filter.categoryIds.isNotEmpty(),
+                        onClick = { showFilters = true },
+                        label = {
+                            Text(if (s.filter.categoryIds.isEmpty()) "Kategori" else "Kategori (${s.filter.categoryIds.size})")
+                        },
+                        trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, null) }
+                    )
+                }
+                item(key = "chipDate") {
+                    FilterChip(
+                        selected = s.filter.from != null && s.filter.to != null,
+                        onClick = { showFilters = true },
+                        label = { Text("Tarih aralığı") },
+                        trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, null) }
+                    )
+                }
+                item(key = "chipSort") {
+                    FilterChip(
+                        selected = s.filter.sort != SortOrder.DATE_DESC,
+                        onClick = { showFilters = true },
+                        label = { Text(s.filter.sort.label) },
+                        trailingIcon = { Icon(Icons.Rounded.KeyboardArrowDown, null) }
+                    )
+                }
+            }
             if (!s.loading && s.items.isNotEmpty()) {
                 Text(
                     "${s.items.size} işlem · Gelir ${s.totalIncome.formatMoney(s.symbol)} · Gider ${s.totalExpense.formatMoney(s.symbol)}",
@@ -278,9 +281,9 @@ fun ExpensesScreen(
 
                 s.items.isEmpty() -> EmptyState(
                     icon = Icons.Rounded.ReceiptLong,
-                    title = if (s.filter.query.isNotBlank() || s.filter.activeCount > 0 || s.filter.type != TypeFilter.ALL)
+                    title = if (s.filter.isActive)
                         "Sonuç bulunamadı" else "Henüz işlem yok",
-                    subtitle = if (s.filter.query.isNotBlank() || s.filter.activeCount > 0 || s.filter.type != TypeFilter.ALL)
+                    subtitle = if (s.filter.isActive)
                         "Filtreleri değiştirmeyi dene." else "İlk işlemini eklemek için Ekle'ye dokun."
                 )
 
@@ -443,7 +446,35 @@ private fun FilterSheet(
                 }
             }
 
+            Text("Ödeme yöntemi", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PaymentMethod.all.forEach { code ->
+                    FilterChip(
+                        selected = code in f.paymentMethods,
+                        onClick = {
+                            onChange {
+                                it.copy(
+                                    paymentMethods = if (code in it.paymentMethods) it.paymentMethods - code
+                                    else it.paymentMethods + code
+                                )
+                            }
+                        },
+                        label = { Text(PaymentMethod.label(code)) }
+                    )
+                }
+            }
+
             Text("Tarih aralığı", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DatePreset.entries.forEach { preset ->
+                    val (a, b) = preset.range(LocalDate.now())
+                    FilterChip(
+                        selected = f.from == a.toEpochDay() && f.to == b.toEpochDay(),
+                        onClick = { onChange { it.copy(from = a.toEpochDay(), to = b.toEpochDay()) } },
+                        label = { Text(preset.label) }
+                    )
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { showRange = true }) {
                     Icon(Icons.Rounded.CalendarMonth, null)

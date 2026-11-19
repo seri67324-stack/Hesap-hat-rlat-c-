@@ -109,7 +109,10 @@ fun TransactionRow(
             )
             val sub = buildList {
                 if (e.note.isNotBlank()) add(e.note)
-                add(PaymentMethod.label(e.paymentMethod))
+                add(
+                    PaymentMethod.label(e.paymentMethod) +
+                        if (e.paymentLabel.isNotBlank()) " (${e.paymentLabel})" else ""
+                )
             }.joinToString(" · ")
             Text(
                 sub,

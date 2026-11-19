@@ -6,6 +6,7 @@ import com.harcamatakip.app.data.local.BudgetDao
 import com.harcamatakip.app.data.local.BudgetEntity
 import com.harcamatakip.app.data.local.CategoryDao
 import com.harcamatakip.app.data.local.CategoryMonthRow
+import com.harcamatakip.app.data.local.QuickTemplateDao
 import com.harcamatakip.app.data.local.MonthSumRow
 import com.harcamatakip.app.data.local.CategoryEntity
 import com.harcamatakip.app.data.local.DefaultCategories
@@ -24,11 +25,13 @@ class ExpenseRepository @Inject constructor(private val dao: ExpenseDao) {
     fun observeBetween(fromDay: Long, toDay: Long): Flow<List<ExpenseEntity>> = dao.observeBetween(fromDay, toDay)
     fun observeMonthSums(fromDay: Long): Flow<List<MonthSumRow>> = dao.observeMonthSums(fromDay)
     fun observeCategoryMonthSums(fromDay: Long): Flow<List<CategoryMonthRow>> = dao.observeCategoryMonthSums(fromDay)
+    fun observeRecentLabels(limit: Int = 6): Flow<List<String>> = dao.observeRecentLabels(limit)
     suspend fun getAll(): List<ExpenseEntity> = dao.getAll()
     suspend fun getById(id: Long): ExpenseEntity? = dao.getById(id)
     suspend fun insert(e: ExpenseEntity): Long = dao.insert(e)
     suspend fun update(e: ExpenseEntity) = dao.update(e)
     suspend fun delete(e: ExpenseEntity) = dao.delete(e)
+    suspend fun deleteById(id: Long) { dao.getById(id)?.let { dao.delete(it) } }
 }
 
 @Singleton
@@ -37,7 +40,8 @@ class CategoryRepository @Inject constructor(
     private val dao: CategoryDao,
     private val expenseDao: ExpenseDao,
     private val recurringDao: RecurringDao,
-    private val budgetDao: BudgetDao
+    private val budgetDao: BudgetDao,
+    private val templateDao: QuickTemplateDao
 ) {
     fun observeAll(): Flow<List<CategoryEntity>> = dao.observeAll()
     suspend fun getAll(): List<CategoryEntity> = dao.getAll()
@@ -62,6 +66,7 @@ class CategoryRepository @Inject constructor(
             if (fallback != null) {
                 expenseDao.reassign(c.id, fallback.id)
                 recurringDao.reassign(c.id, fallback.id)
+                templateDao.reassign(c.id, fallback.id)
             }
             budgetDao.deleteByCategory(c.id)
             dao.delete(c)
@@ -109,6 +114,7 @@ class RecurringRepository @Inject constructor(
                             date = due,
                             note = r.note,
                             paymentMethod = r.paymentMethod,
+                            paymentLabel = r.paymentLabel,
                             recurringId = r.id
                         )
                     )

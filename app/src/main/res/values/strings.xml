@@ -3,4 +3,5 @@
     <string name="app_name">Harcama Takip</string>
     <string name="channel_budget">Bütçe uyarıları</string>
     <string name="channel_due">Ödeme hatırlatmaları</string>
+    <string name="channel_backup">Yedek hatırlatmaları</string>
 </resources>

@@ -1,5 +1,6 @@
 package com.harcamatakip.app.domain.usecase
 
+import com.harcamatakip.app.core.util.changePercent
 import com.harcamatakip.app.data.local.CategoryEntity
 import com.harcamatakip.app.data.local.CategoryMonthRow
 import com.harcamatakip.app.data.local.MonthSumRow
@@ -22,7 +23,48 @@ data class DayTotal(val day: LocalDate, val expense: Long)
 data class TrendPoint(val start: LocalDate, val end: LocalDate, val value: Long)
 
 data class WeekdayAvg(val day: DayOfWeek, val average: Long)
-data class PaymentSplit(val cash: Long, val card: Long)
+/** Kart/hesap etiketi bazında toplam (ör. "Garanti •1234": 1.250 ₺). */
+data class LabelTotal(val method: String, val label: String, val amount: Long)
+
+/** Ödeme yöntemi dağılımı: Nakit / Banka Kartı / Kredi Kartı + etiket kırılımı. */
+data class PaymentSplit(
+    val cash: Long,
+    val debit: Long,
+    val credit: Long,
+    val labels: List<LabelTotal> = emptyList()
+) {
+    /** Her iki kart türünün toplamı. */
+    val card: Long get() = debit + credit
+    val total: Long get() = cash + debit + credit
+
+    fun amountOf(method: String): Long = when (PaymentMethod.normalize(method)) {
+        PaymentMethod.DEBIT_CARD -> debit
+        PaymentMethod.CREDIT_CARD -> credit
+        else -> cash
+    }
+}
+
+/** Önceki dönemle karşılaştırma. [changePct] önceki 0 ise null ("yeni" harcama). */
+data class CategoryTrend(
+    val categoryId: Long,
+    val current: Long,
+    val previous: Long,
+    val changePct: Double?
+)
+
+/** "Dönem sonu tahmini toplam" kartındaki açıklamanın ham sayıları (hepsi kuruş). */
+data class ProjectionBreakdown(
+    val fixed: Long,
+    val variableSoFar: Long,
+    val elapsedDays: Long,
+    val lengthDays: Long,
+    val dailyVariableRate: Long,
+    val projectedVariable: Long,
+    val upcomingRecurring: Long,
+    val total: Long
+) {
+    val remainingDays: Long get() = (lengthDays - elapsedDays).coerceAtLeast(0)
+}
 
 data class Insights(
     val changePct: Double?,
@@ -115,13 +157,61 @@ object AnalyticsCalculator {
         to: LocalDate,
         today: LocalDate,
         upcomingRecurring: Long
-    ): Long {
+    ): Long = projectionBreakdown(expensesInRange, from, to, today, upcomingRecurring).total
+
+    /** [projectExpense] ile aynı hesap; kullanıcıya adım adım anlatabilmek için ara değerleri de verir. */
+    fun projectionBreakdown(
+        expensesInRange: List<ExpenseEntity>,
+        from: LocalDate,
+        to: LocalDate,
+        today: LocalDate,
+        upcomingRecurring: Long
+    ): ProjectionBreakdown {
         val length = (to.toEpochDay() - from.toEpochDay() + 1).coerceAtLeast(1L)
         val elapsed = elapsedDays(from, to, today)
         val fixed = expensesInRange.filter { it.recurringId != null }.sumOf { it.amount }
         val variable = expensesInRange.filter { it.recurringId == null }.sumOf { it.amount }
-        return fixed + variable * length / elapsed + upcomingRecurring
+        val projectedVariable = variable * length / elapsed
+        return ProjectionBreakdown(
+            fixed = fixed,
+            variableSoFar = variable,
+            elapsedDays = elapsed,
+            lengthDays = length,
+            dailyVariableRate = variable / elapsed,
+            projectedVariable = projectedVariable,
+            upcomingRecurring = upcomingRecurring,
+            total = fixed + projectedVariable + upcomingRecurring
+        )
     }
+
+    /**
+     * Önceki dönemin, mevcut dönemle AYNI sayıda gününü kapsayan kategori bazlı gider toplamları
+     * ([previousComparable] ile aynı adil karşılaştırma kuralı).
+     */
+    fun previousCategoryTotals(
+        all: List<ExpenseEntity>,
+        period: Period,
+        from: LocalDate,
+        to: LocalDate,
+        today: LocalDate
+    ): Map<Long, Long> {
+        val (pFrom, pTo) = previousRange(period, from, to)
+        val elapsed = elapsedDays(from, to, today)
+        val start = pFrom.toEpochDay()
+        val end = minOf(pTo.toEpochDay(), start + elapsed - 1)
+        return all.asSequence()
+            .filter { !it.isIncome && it.date in start..end }
+            .groupBy { it.categoryId }
+            .mapValues { (_, list) -> list.sumOf { it.amount } }
+    }
+
+    /** Kategori başına mevcut/önceki dönem ve değişim yüzdesi. */
+    fun categoryTrends(current: List<CategoryTotal>, previous: Map<Long, Long>): Map<Long, CategoryTrend> =
+        current.mapNotNull { t ->
+            val id = t.category?.id ?: return@mapNotNull null
+            val prev = previous[id] ?: 0L
+            id to CategoryTrend(id, t.amount, prev, changePercent(t.amount, prev))
+        }.toMap()
 
     /** Bugünden sonra ve [to] dahil tarihe kadar vadesi gelecek aktif tekrarlayan giderlerin toplamı. */
     fun upcomingRecurringExpense(items: List<RecurringEntity>, today: LocalDate, to: LocalDate): Long {
@@ -289,8 +379,26 @@ object AnalyticsCalculator {
             WeekdayAvg(dow, if (days.isEmpty()) 0L else days.sumOf { it.expense } / days.size)
         }
 
-    fun paymentSplit(expenses: List<ExpenseEntity>): PaymentSplit = PaymentSplit(
-        cash = expenses.filter { it.paymentMethod != PaymentMethod.CARD }.sumOf { it.amount },
-        card = expenses.filter { it.paymentMethod == PaymentMethod.CARD }.sumOf { it.amount }
-    )
+    fun paymentSplit(expenses: List<ExpenseEntity>): PaymentSplit {
+        var cash = 0L
+        var debit = 0L
+        var credit = 0L
+        val labels = HashMap<Pair<String, String>, Long>()
+        for (e in expenses) {
+            val method = PaymentMethod.normalize(e.paymentMethod)
+            when (method) {
+                PaymentMethod.DEBIT_CARD -> debit += e.amount
+                PaymentMethod.CREDIT_CARD -> credit += e.amount
+                else -> cash += e.amount
+            }
+            val label = e.paymentLabel.trim()
+            if (label.isNotEmpty() && method != PaymentMethod.CASH) {
+                val k = method to label
+                labels[k] = (labels[k] ?: 0L) + e.amount
+            }
+        }
+        val labelList = labels.map { (k, v) -> LabelTotal(k.first, k.second, v) }
+            .sortedByDescending { it.amount }
+        return PaymentSplit(cash, debit, credit, labelList)
+    }
 }

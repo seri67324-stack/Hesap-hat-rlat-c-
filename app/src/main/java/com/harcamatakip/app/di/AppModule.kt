@@ -3,9 +3,12 @@ package com.harcamatakip.app.di
 import android.content.Context
 import androidx.room.Room
 import com.harcamatakip.app.data.local.AppDatabase
+import com.harcamatakip.app.data.local.BudgetAlertDao
 import com.harcamatakip.app.data.local.BudgetDao
 import com.harcamatakip.app.data.local.CategoryDao
 import com.harcamatakip.app.data.local.ExpenseDao
+import com.harcamatakip.app.data.local.MIGRATION_1_2
+import com.harcamatakip.app.data.local.QuickTemplateDao
 import com.harcamatakip.app.data.local.RecurringDao
 import dagger.Module
 import dagger.Provides
@@ -21,7 +24,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): AppDatabase =
-        Room.databaseBuilder(ctx, AppDatabase::class.java, "harcama.db").build()
+        Room.databaseBuilder(ctx, AppDatabase::class.java, "harcama.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideExpenseDao(db: AppDatabase): ExpenseDao = db.expenseDao()
@@ -34,4 +39,10 @@ object AppModule {
 
     @Provides
     fun provideRecurringDao(db: AppDatabase): RecurringDao = db.recurringDao()
+
+    @Provides
+    fun provideQuickTemplateDao(db: AppDatabase): QuickTemplateDao = db.quickTemplateDao()
+
+    @Provides
+    fun provideBudgetAlertDao(db: AppDatabase): BudgetAlertDao = db.budgetAlertDao()
 }

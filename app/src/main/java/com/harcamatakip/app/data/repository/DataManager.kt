@@ -5,14 +5,19 @@ import android.net.Uri
 import androidx.room.withTransaction
 import com.harcamatakip.app.core.util.CategoryPalette
 import com.harcamatakip.app.data.local.AppDatabase
+import com.harcamatakip.app.data.local.BudgetAlertDao
 import com.harcamatakip.app.data.local.BudgetDao
 import com.harcamatakip.app.data.local.BudgetEntity
 import com.harcamatakip.app.data.local.CategoryDao
 import com.harcamatakip.app.data.local.CategoryEntity
 import com.harcamatakip.app.data.local.ExpenseDao
 import com.harcamatakip.app.data.local.ExpenseEntity
+import com.harcamatakip.app.data.local.QuickTemplateDao
+import com.harcamatakip.app.data.local.QuickTemplateEntity
 import com.harcamatakip.app.data.local.RecurringDao
 import com.harcamatakip.app.data.local.RecurringEntity
+import com.harcamatakip.app.data.settings.SettingsRepository
+import com.harcamatakip.app.domain.model.PaymentMethod
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,7 +39,10 @@ class DataManager @Inject constructor(
     private val categoryDao: CategoryDao,
     private val budgetDao: BudgetDao,
     private val recurringDao: RecurringDao,
-    private val categoryRepo: CategoryRepository
+    private val templateDao: QuickTemplateDao,
+    private val alertDao: BudgetAlertDao,
+    private val categoryRepo: CategoryRepository,
+    private val settings: SettingsRepository
 ) {
 
     // ---------------------------------------------------------------- CSV
@@ -44,7 +52,7 @@ class DataManager @Inject constructor(
         val list = expenseDao.getAll().sortedWith(compareBy({ it.date }, { it.id }))
         val sb = StringBuilder()
         sb.append('﻿') // Excel Türkçe karakterleri doğru okusun
-        sb.append("Tarih;Tür;Tutar;Kategori;Not;Ödeme\n")
+        sb.append("Tarih;Tür;Tutar;Kategori;Not;Ödeme;Etiket\n")
         for (e in list) {
             val amount = String.format(java.util.Locale.US, "%.2f", e.amount / 100.0)
             sb.append(LocalDate.ofEpochDay(e.date)).append(';')
@@ -52,7 +60,8 @@ class DataManager @Inject constructor(
                 .append(amount).append(';')
                 .append(csvEscape(cats[e.categoryId]?.name ?: "Diğer")).append(';')
                 .append(csvEscape(e.note)).append(';')
-                .append(if (e.paymentMethod == "CARD") "Kart" else "Nakit").append('\n')
+                .append(PaymentMethod.label(e.paymentMethod)).append(';')
+                .append(csvEscape(e.paymentLabel)).append('\n')
         }
         writeText(uri, sb.toString())
         list.size
@@ -104,10 +113,12 @@ class DataManager @Inject constructor(
                 categories += cat
             }
             val note = row.getOrNull(4)?.trim().orEmpty()
-            val payment = if (row.getOrNull(5)?.trim()?.lowercase() == "kart") "CARD" else "CASH"
+            // "Nakit" / "Banka Kartı" / "Kredi Kartı"; eski dosyalardaki "Kart" kredi kartına eşlenir
+            val payment = PaymentMethod.fromText(row.getOrNull(5)) ?: PaymentMethod.CASH
+            val label = if (payment == PaymentMethod.CASH) "" else PaymentMethod.cleanLabel(row.getOrNull(6).orEmpty())
             toInsert += ExpenseEntity(
                 amount = kurus, isIncome = isIncome, categoryId = cat.id,
-                date = date.toEpochDay(), note = note, paymentMethod = payment
+                date = date.toEpochDay(), note = note, paymentMethod = payment, paymentLabel = label
             )
         }
         expenseDao.insertAll(toInsert)
@@ -178,13 +189,16 @@ class DataManager @Inject constructor(
     suspend fun backup(uri: Uri): Int = withContext(Dispatchers.IO) {
         val expenses = expenseDao.getAll()
         val root = JSONObject()
-            .put("version", 1)
+            .put("version", 2)
             .put("exportedAt", LocalDate.now().toString())
             .put("categories", JSONArray(categoryDao.getAll().map { it.toJson() }))
             .put("expenses", JSONArray(expenses.map { it.toJson() }))
             .put("budgets", JSONArray(budgetDao.getAll().map { it.toJson() }))
             .put("recurring", JSONArray(recurringDao.getAll().map { it.toJson() }))
+            .put("templates", JSONArray(templateDao.getAll().map { it.toJson() }))
         writeText(uri, root.toString())
+        // Yedek hatırlatıcısı için son yedek günü (yalnızca yazma başarılı olduktan sonra)
+        settings.markBackupDone(LocalDate.now().toEpochDay())
         expenses.size
     }
 
@@ -197,16 +211,20 @@ class DataManager @Inject constructor(
         val expenses = root.getJSONArray("expenses").map { it.toExpense() }
         val budgets = root.optJSONArray("budgets")?.map { it.toBudget() } ?: emptyList()
         val recurring = root.optJSONArray("recurring")?.map { it.toRecurring() } ?: emptyList()
+        val templates = root.optJSONArray("templates")?.map { it.toTemplate() } ?: emptyList() // v1 yedeğinde yok
 
         db.withTransaction {
             expenseDao.deleteAll()
             recurringDao.deleteAll()
             budgetDao.deleteAll()
+            templateDao.deleteAll()
+            alertDao.deleteAll()
             categoryDao.deleteAll()
             categoryDao.insertAll(categories)
             expenseDao.insertAll(expenses)
             budgetDao.insertAll(budgets)
             recurringDao.insertAll(recurring)
+            templateDao.insertAll(templates)
         }
         categoryRepo.ensureDefaults()
         expenses.size
@@ -217,6 +235,8 @@ class DataManager @Inject constructor(
             expenseDao.deleteAll()
             recurringDao.deleteAll()
             budgetDao.deleteAll()
+            templateDao.deleteAll()
+            alertDao.deleteAll()
             categoryDao.deleteAll()
         }
         categoryRepo.ensureDefaults()
@@ -252,12 +272,15 @@ class DataManager @Inject constructor(
     private fun ExpenseEntity.toJson() = JSONObject()
         .put("id", id).put("amount", amount).put("isIncome", isIncome)
         .put("categoryId", categoryId).put("date", date).put("note", note)
-        .put("payment", paymentMethod).put("recurringId", recurringId ?: JSONObject.NULL)
+        .put("payment", paymentMethod).put("paymentLabel", paymentLabel)
+        .put("recurringId", recurringId ?: JSONObject.NULL)
 
     private fun JSONObject.toExpense() = ExpenseEntity(
         id = getLong("id"), amount = getLong("amount"), isIncome = getBoolean("isIncome"),
         categoryId = getLong("categoryId"), date = getLong("date"), note = optString("note", ""),
-        paymentMethod = optString("payment", "CASH"),
+        // Eski yedeklerdeki "CARD" burada yeni koda çevrilir
+        paymentMethod = PaymentMethod.normalize(optString("payment", "CASH")),
+        paymentLabel = optString("paymentLabel", ""),
         recurringId = if (isNull("recurringId")) null else getLong("recurringId")
     )
 
@@ -271,14 +294,28 @@ class DataManager @Inject constructor(
     private fun RecurringEntity.toJson() = JSONObject()
         .put("id", id).put("amount", amount).put("isIncome", isIncome)
         .put("categoryId", categoryId).put("note", note).put("payment", paymentMethod)
-        .put("frequency", frequency).put("startDay", startDay)
+        .put("paymentLabel", paymentLabel).put("frequency", frequency).put("startDay", startDay)
         .put("nextDueDay", nextDueDay).put("active", active)
 
     private fun JSONObject.toRecurring() = RecurringEntity(
         id = getLong("id"), amount = getLong("amount"), isIncome = getBoolean("isIncome"),
         categoryId = getLong("categoryId"), note = optString("note", ""),
-        paymentMethod = optString("payment", "CASH"), frequency = getString("frequency"),
+        paymentMethod = PaymentMethod.normalize(optString("payment", "CASH")),
+        paymentLabel = optString("paymentLabel", ""), frequency = getString("frequency"),
         startDay = getLong("startDay"), nextDueDay = getLong("nextDueDay"),
         active = optBoolean("active", true)
+    )
+
+    private fun QuickTemplateEntity.toJson() = JSONObject()
+        .put("id", id).put("title", title).put("amount", amount).put("isIncome", isIncome)
+        .put("categoryId", categoryId).put("payment", paymentMethod).put("paymentLabel", paymentLabel)
+        .put("note", note).put("useCount", useCount).put("lastUsedDay", lastUsedDay)
+
+    private fun JSONObject.toTemplate() = QuickTemplateEntity(
+        id = getLong("id"), title = getString("title"), amount = getLong("amount"),
+        isIncome = getBoolean("isIncome"), categoryId = getLong("categoryId"),
+        paymentMethod = PaymentMethod.normalize(optString("payment", "CASH")),
+        paymentLabel = optString("paymentLabel", ""), note = optString("note", ""),
+        useCount = optInt("useCount", 0), lastUsedDay = optLong("lastUsedDay", 0)
     )
 }

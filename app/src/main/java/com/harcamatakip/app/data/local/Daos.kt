@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
 /** SQL'de hesaplanan aylık toplam satırı. [ym] = "2026-11" biçimindedir. */
 data class MonthSumRow(val ym: String, val isIncome: Boolean, val total: Long)
 
+/** SQL'de hesaplanan kategori bazlı gider toplamı (belirli bir tarih aralığı için). */
+data class CategorySumRow(val categoryId: Long, val total: Long)
+
 /** SQL'de hesaplanan kategori + ay bazlı gider toplamı. */
 data class CategoryMonthRow(val categoryId: Long, val ym: String, val total: Long)
 
@@ -36,6 +39,20 @@ interface ExpenseDao {
             "FROM expenses WHERE isIncome = 0 AND date >= :fromDay GROUP BY categoryId, ym"
     )
     fun observeCategoryMonthSums(fromDay: Long): Flow<List<CategoryMonthRow>>
+
+    /** [fromDay]..[toDay] aralığında kategori başına gider toplamı (bütçe uyarıları için hafif sorgu). */
+    @Query(
+        "SELECT categoryId, SUM(amount) AS total FROM expenses " +
+            "WHERE isIncome = 0 AND date BETWEEN :fromDay AND :toDay GROUP BY categoryId"
+    )
+    suspend fun categorySumsBetween(fromDay: Long, toDay: Long): List<CategorySumRow>
+
+    /** En son kullanılan kart/hesap etiketleri (öneri çipleri için). */
+    @Query(
+        "SELECT paymentLabel FROM expenses WHERE paymentLabel != '' " +
+            "GROUP BY paymentLabel ORDER BY MAX(date) DESC LIMIT :limit"
+    )
+    fun observeRecentLabels(limit: Int): Flow<List<String>>
 
     @Query("SELECT * FROM expenses")
     suspend fun getAll(): List<ExpenseEntity>
@@ -143,5 +160,51 @@ interface RecurringDao {
     suspend fun reassign(fromId: Long, toId: Long)
 
     @Query("DELETE FROM recurring")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface QuickTemplateDao {
+    @Query("SELECT * FROM quick_templates ORDER BY useCount DESC, lastUsedDay DESC, id DESC")
+    fun observeAll(): Flow<List<QuickTemplateEntity>>
+
+    @Query("SELECT * FROM quick_templates")
+    suspend fun getAll(): List<QuickTemplateEntity>
+
+    @Query("SELECT * FROM quick_templates WHERE id = :id")
+    suspend fun getById(id: Long): QuickTemplateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(t: QuickTemplateEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(list: List<QuickTemplateEntity>)
+
+    @Delete
+    suspend fun delete(t: QuickTemplateEntity)
+
+    @Query("UPDATE quick_templates SET useCount = useCount + 1, lastUsedDay = :day WHERE id = :id")
+    suspend fun markUsed(id: Long, day: Long)
+
+    @Query("UPDATE quick_templates SET categoryId = :toId WHERE categoryId = :fromId")
+    suspend fun reassign(fromId: Long, toId: Long)
+
+    @Query("DELETE FROM quick_templates")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface BudgetAlertDao {
+    @Query("SELECT * FROM budget_alert_state WHERE categoryId = :categoryId AND periodKey = :periodKey")
+    suspend fun get(categoryId: Long, periodKey: String): BudgetAlertStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(s: BudgetAlertStateEntity)
+
+    /** Eski dönemlere ait durum satırlarını temizler. */
+    @Query("DELETE FROM budget_alert_state WHERE periodKey != :keepPeriod")
+    suspend fun purgeExcept(keepPeriod: String)
+
+    @Query("DELETE FROM budget_alert_state")
     suspend fun deleteAll()
 }

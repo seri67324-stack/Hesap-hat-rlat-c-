@@ -1,16 +1,19 @@
 package com.harcamatakip.app.domain
 
+import com.harcamatakip.app.data.local.CategoryEntity
 import com.harcamatakip.app.data.local.CategoryMonthRow
 import com.harcamatakip.app.data.local.ExpenseEntity
 import com.harcamatakip.app.data.local.MonthSumRow
 import com.harcamatakip.app.data.local.RecurringEntity
 import com.harcamatakip.app.domain.model.Frequency
+import com.harcamatakip.app.domain.model.PaymentMethod
 import com.harcamatakip.app.domain.model.Period
 import com.harcamatakip.app.domain.model.RecurrenceUtil
 import com.harcamatakip.app.domain.usecase.AnalyticsCalculator
 import com.harcamatakip.app.domain.usecase.CategoryTotal
 import com.harcamatakip.app.domain.usecase.DayTotal
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -164,14 +167,83 @@ class AnalyticsCalculatorTest {
     }
 
     @Test
-    fun paymentSplit_separatesCashAndCard() {
+    fun paymentSplit_separatesCashDebitAndCredit() {
         val list = listOf(
-            exp(100, today).copy(paymentMethod = "CASH"),
-            exp(250, today).copy(paymentMethod = "CARD")
+            exp(100, today).copy(paymentMethod = PaymentMethod.CASH),
+            exp(250, today).copy(paymentMethod = PaymentMethod.DEBIT_CARD, paymentLabel = "Garanti •1234"),
+            exp(400, today).copy(paymentMethod = PaymentMethod.CREDIT_CARD, paymentLabel = "Yapı Kredi"),
+            exp(50, today).copy(paymentMethod = "CARD"), // eski kayıt: kredi kartı sayılır
+            exp(30, today).copy(paymentMethod = PaymentMethod.DEBIT_CARD, paymentLabel = "Garanti •1234")
         )
         val p = AnalyticsCalculator.paymentSplit(list)
         assertEquals(100L, p.cash)
-        assertEquals(250L, p.card)
+        assertEquals(280L, p.debit)
+        assertEquals(450L, p.credit)
+        assertEquals(730L, p.card)
+        assertEquals(830L, p.total)
+        assertEquals(280L, p.amountOf(PaymentMethod.DEBIT_CARD))
+        // Etiketler tutara göre azalan sırada ve aynı etiket birleşir
+        assertEquals(listOf("Yapı Kredi", "Garanti •1234"), p.labels.map { it.label })
+        assertEquals(280L, p.labels[1].amount)
+    }
+
+    @Test
+    fun paymentSplit_ignoresLabelOnCash() {
+        val p = AnalyticsCalculator.paymentSplit(listOf(exp(100, today).copy(paymentLabel = "Cüzdan")))
+        assertEquals(100L, p.cash)
+        assertEquals(emptyList<Any>(), p.labels)
+    }
+
+    @Test
+    fun projectionBreakdown_explainsEachPart() {
+        val list = listOf(
+            exp(1000, LocalDate.of(2026, 11, 1), recurringId = 7L),
+            exp(100, LocalDate.of(2026, 11, 2)),
+            exp(200, LocalDate.of(2026, 11, 5))
+        )
+        val b = AnalyticsCalculator.projectionBreakdown(list, from, to, today, 500L)
+        assertEquals(1000L, b.fixed)
+        assertEquals(300L, b.variableSoFar)
+        assertEquals(10L, b.elapsedDays)
+        assertEquals(30L, b.lengthDays)
+        assertEquals(20L, b.remainingDays)
+        assertEquals(30L, b.dailyVariableRate)
+        assertEquals(900L, b.projectedVariable)
+        assertEquals(500L, b.upcomingRecurring)
+        assertEquals(2400L, b.total)
+        // projectExpense ile birebir aynı sonuç
+        assertEquals(b.total, AnalyticsCalculator.projectExpense(list, from, to, today, 500L))
+    }
+
+    @Test
+    fun previousCategoryTotals_comparesSameNumberOfDays() {
+        val all = listOf(
+            exp(100, LocalDate.of(2026, 10, 5), category = 1L),
+            exp(50, LocalDate.of(2026, 10, 10), category = 1L),   // 10. gün: dahil
+            exp(70, LocalDate.of(2026, 10, 11), category = 1L),   // 11. gün: dışarıda
+            exp(500, LocalDate.of(2026, 10, 20), category = 2L),  // dışarıda
+            exp(999, LocalDate.of(2026, 10, 3), income = true, category = 1L) // gelir: sayılmaz
+        )
+        val prev = AnalyticsCalculator.previousCategoryTotals(all, Period.MONTH, from, to, today)
+        assertEquals(mapOf(1L to 150L), prev)
+    }
+
+    @Test
+    fun categoryTrends_computesPercentAndMarksNewCategories() {
+        val c1 = CategoryEntity(id = 1, name = "Market", iconKey = "cart", colorArgb = 0xFF000000)
+        val c2 = CategoryEntity(id = 2, name = "Yeni", iconKey = "more", colorArgb = 0xFF000000)
+        val current = listOf(CategoryTotal(c1, 300, 0.75f), CategoryTotal(c2, 100, 0.25f))
+        val trends = AnalyticsCalculator.categoryTrends(current, mapOf(1L to 150L))
+        assertEquals(100.0, trends.getValue(1L).changePct!!, 0.0001) // 150 -> 300 = +%100
+        assertEquals(150L, trends.getValue(1L).previous)
+        assertNull(trends.getValue(2L).changePct)                    // önceki dönemde yoktu
+    }
+
+    @Test
+    fun categoryTrends_decreaseIsNegative() {
+        val c1 = CategoryEntity(id = 1, name = "Market", iconKey = "cart", colorArgb = 0xFF000000)
+        val trends = AnalyticsCalculator.categoryTrends(listOf(CategoryTotal(c1, 75, 1f)), mapOf(1L to 100L))
+        assertEquals(-25.0, trends.getValue(1L).changePct!!, 0.0001)
     }
 
     @Test

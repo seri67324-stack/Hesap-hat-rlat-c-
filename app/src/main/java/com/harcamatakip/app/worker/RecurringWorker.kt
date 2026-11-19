@@ -10,6 +10,7 @@ import com.harcamatakip.app.data.repository.BudgetAlertManager
 import com.harcamatakip.app.data.repository.CategoryRepository
 import com.harcamatakip.app.data.repository.RecurringRepository
 import com.harcamatakip.app.data.settings.SettingsRepository
+import com.harcamatakip.app.domain.usecase.BackupReminderPolicy
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.time.LocalDate
@@ -53,9 +54,28 @@ class RecurringWorker @AssistedInject constructor(
             }
 
             alerts.check()
+            checkBackupReminder(today)
             Result.success()
         } catch (e: Exception) {
             Result.retry()
         }
+    }
+
+    /** Yedek vadesi geldiyse (ve yakın zamanda hatırlatılmadıysa) hafif bir bildirim gönderir. */
+    private suspend fun checkBackupReminder(today: Long) {
+        settings.ensureBackupBaseline(today)
+        val st = settings.settingsOnce()
+        val due = BackupReminderPolicy.isDue(
+            st.backupIntervalDays, today, st.lastBackupDay, st.backupSnoozeDay, st.backupBaselineDay
+        )
+        if (!BackupReminderPolicy.shouldNotify(due, st.backupIntervalDays, today, st.backupNudgeDay)) return
+        val since = BackupReminderPolicy.daysSince(st.lastBackupDay, today)
+        val text = if (since == null) "Henüz hiç yedek almadın. Dokun, verilerini tek dosyaya kaydet."
+        else "Son yedeğin $since gün önce alındı. Dokunarak yeni yedek al."
+        Notifier.notify(
+            applicationContext, Notifier.CH_BACKUP, "backup-reminder".hashCode(),
+            "Yedek alma zamanı", text, action = Notifier.ACTION_BACKUP
+        )
+        settings.markBackupNudged(today)
     }
 }

@@ -20,6 +20,12 @@ Kotlin + Jetpack Compose (Material 3) · MVVM · Hilt · Room · DataStore · Wo
 - Erişilebilirlik: grafiklerde TalkBack açıklamaları, gider çubuklarında renkten bağımsız çizgi deseni
 - CSV dışa/içe aktarma, JSON yedekleme/geri yükleme, tüm verileri silme
 - Koyu/açık tema, Android 12+ dinamik renk, para birimi seçimi
+- **Hızlı ekle:** işlemi "Şablon olarak kaydet", ana ekranda tek dokunuşla ekle (geri al destekli); sık tekrarlanan işlemler otomatik önerilir
+- **Ödeme yöntemi:** Nakit / Banka Kartı / Kredi Kartı + isteğe bağlı kart/hesap etiketi; analizde halka grafik ve etiket kırılımı
+- **Gelişmiş filtre:** kategori, ödeme yöntemi, tarih aralığı (hazır kısayollarla), tutar ve sıralama
+- **Bütçe bildirimi:** her ay %80 ve %100 eşiği için en fazla 1'er bildirim (Room'da durum takibi)
+- **Analiz:** tahmin kartında "nasıl hesaplanır" açıklaması, günlük güvenli harcama limiti, kategori bazlı +% / −% trend ve karşılaştırma grafiği
+- **Yedek hatırlatıcısı:** haftalık/2 haftalık/aylık kart + bildirim; dokununca yedek penceresi açılır
 
 ## Derleme
 1. Android Studio (Koala veya yenisi) ile klasörü aç, Gradle Sync bekle.

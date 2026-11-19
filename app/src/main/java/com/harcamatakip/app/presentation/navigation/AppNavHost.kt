@@ -12,8 +12,10 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -21,6 +23,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import com.harcamatakip.app.core.util.AppEvents
 import com.harcamatakip.app.presentation.analytics.AnalyticsScreen
 import com.harcamatakip.app.presentation.budget.BudgetScreen
 import com.harcamatakip.app.presentation.categories.CategoriesScreen
@@ -36,6 +39,18 @@ fun AppNavHost() {
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination?.route
     val showBar = bottomItems.any { it.screen.route == current }
+
+    // Yedek hatırlatma bildirimine dokunulduysa Ana Sayfa'ya git; yedek penceresini orası açar
+    val backupRequested by AppEvents.startBackup.collectAsStateWithLifecycle()
+    LaunchedEffect(backupRequested, current) {
+        if (backupRequested && current != null && current != Screen.Home.route) {
+            nav.navigate(Screen.Home.route) {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     Scaffold(
         bottomBar = {
